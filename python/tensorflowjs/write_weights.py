@@ -26,6 +26,9 @@ _AUTO_DTYPE_CONVERSION = {
     np.dtype(np.float64): np.float32,
     np.dtype(np.int64): np.int32}
 
+# Layers with more than this count of weights will be quantized with one byte per float;
+# smaller layers will use 2 bytes per float.
+QUANTIZATION_WEIGHT_COUNT_THRESHOLD = 10 * 1000
 
 def write_weights(
     weight_groups, write_dir, shard_size_bytes=1024 * 1024 * 4,
@@ -114,8 +117,7 @@ def write_weights(
   manifest = []
 
   for group_index, group in enumerate(weight_groups):
-    if quantization_dtype:
-      group = [_quantize_entry(e, quantization_dtype) for e in group]
+    group = [_quantize_entry(e) for e in group]
     group_bytes, total_bytes, _ = _stack_group_bytes(group)
 
     shard_filenames = _shard_group_bytes_to_disk(
@@ -136,7 +138,7 @@ def write_weights(
   return manifest
 
 
-def _quantize_entry(entry, quantization_dtype):
+def _quantize_entry(entry):
   """Quantizes the weights in the entry, returning a new entry.
 
   The weights are quantized by linearly re-scaling the values between the
@@ -166,6 +168,15 @@ def _quantize_entry(entry, quantization_dtype):
         }
   """
   data = entry['data']
+  weight_count = np.product(data.shape)
+
+  # Hack: Override d_type based on weight_count, quantizing larger layers more agressively
+  if weight_count < QUANTIZATION_WEIGHT_COUNT_THRESHOLD:
+    quantization_dtype = np.uint16
+  else:
+    quantization_dtype = np.uint8
+  print("Overrode dtype for entry of size {} to {}".format(weight_count, quantization_dtype))
+
   quantized_data, scale, min_val = quantization.quantize_weights(
       data, quantization_dtype)
   quantized_entry = entry.copy()
